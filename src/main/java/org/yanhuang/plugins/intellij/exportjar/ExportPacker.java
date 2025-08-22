@@ -30,7 +30,8 @@ import static org.yanhuang.plugins.intellij.exportjar.utils.MessagesUtils.*;
 /**
  * when compiled successfully, pack file and export to jar
  */
-public class ExportPacker implements CompileStatusNotification {
+public class ExportPacker implements CompileStatusNotification
+{
     private final Project project;
     private final VirtualFile[] selectedFiles;
     private final Path exportJarFullPath;
@@ -87,52 +88,121 @@ public class ExportPacker implements CompileStatusNotification {
             }
             spIndex = entryName.indexOf("/", spIndex + 1);
         }
+
+        // 处理webapp目录结构
+        if (entryName.startsWith("webapp/")) {
+            spIndex = entryName.indexOf("/", 7); // 从"webapp/"之后开始查找
+            while (spIndex > 0) {
+                final String dir = entryName.substring(0, spIndex + 1);
+                if (added.add(dir)) {
+                    filePaths.add(null);
+                    entryNames.add(dir);
+                }
+                spIndex = entryName.indexOf("/", spIndex + 1);
+            }
+        }
+    }
+
+    // 检查是否在webapp目录下的方法
+    private boolean isInWebAppDirectory(VirtualFile virtualFile) {
+        VirtualFile current = virtualFile;
+        while (current != null) {
+            if ("webapp".equals(current.getName())) {
+                return true;
+            }
+            current = current.getParent();
+        }
+        return false;
+    }
+
+    private String calculateWebAppEntryPath(VirtualFile virtualFile) {
+        List<String> pathSegments = new ArrayList<>();
+        VirtualFile current = virtualFile;
+
+        // 向上遍历直到webapp目录
+        while (current != null && !"webapp".equals(current.getName())) {
+            pathSegments.add(0, current.getName());
+            current = current.getParent();
+        }
+
+        if (current == null) {
+            return null; // 未找到webapp目录
+        }
+
+        // 构建相对于webapp的路径
+        StringBuilder path = new StringBuilder("webapp");
+        for (String segment : pathSegments) {
+            path.append("/").append(segment);
+        }
+
+        return path.toString();
     }
 
     private void collectExportVirtualFile(List<Path> filePaths, List<String> jarEntryNames, VirtualFile virtualFile) {
-        final boolean inTestSourceContent =
-                ProjectRootManager.getInstance(project).getFileIndex().isInTestSourceContent(virtualFile);
-        if (inTestSourceContent && !exportOptionSet.contains(ExportOptions.export_test)) { // not export test source and resource files
+        // 判断是否在测试源内容中
+        final boolean inTestSourceContent = ProjectRootManager.getInstance(project).getFileIndex().isInTestSourceContent(virtualFile);
+
+        // 如果在测试源内容中且不导出测试文件，则返回
+        if (inTestSourceContent && !exportOptionSet.contains(ExportOptions.export_test)) {
             return;
         }
-        // find package name
-        PsiDirectory psiDirectory = PsiManager.getInstance(project).findDirectory(virtualFile.isDirectory() ?
-                virtualFile : virtualFile.getParent());
+
+        // 检查是否为web资源文件
+        if (isInWebAppDirectory(virtualFile)) {
+            // 计算相对于webapp目录的路径
+            String entryPath = calculateWebAppEntryPath(virtualFile);
+            if (entryPath != null) {
+                collectExportFile(filePaths, jarEntryNames, "", Paths.get(virtualFile.getPath()), entryPath);
+            }
+            return;
+        }
+
+        // 查找包名
+        PsiDirectory psiDirectory = PsiManager.getInstance(project).findDirectory(virtualFile.isDirectory() ? virtualFile : virtualFile.getParent());
         PsiPackage psiPackage = JavaDirectoryService.getInstance().getPackage(psiDirectory);
         String packagePath = psiPackage == null ? "" : psiPackage.getQualifiedName().replaceAll("\\.", "/");
         String fileName = virtualFile.getName();
+
+        // 如果是可编译的文件类型
         if (CompilerManager.getInstance(project).isCompilableFileType(virtualFile.getFileType())) {
+            // 如果导出 Java 文件，则收集文件
             if (exportOptionSet.contains(ExportOptions.export_java)) {
                 collectExportFile(filePaths, jarEntryNames, packagePath, Paths.get(virtualFile.getPath()));
             }
-            // only export java classes
+
+            // 仅导出 Java 类文件
             if (psiPackage != null && exportOptionSet.contains(ExportOptions.export_class) && isExportClassSourceFile(fileName)) {
                 PsiClass[] psiClasses = psiPackage.getClasses();
                 if (psiClasses.length == 0) {
                     warn(project, "not found class info of source file " + virtualFile.getPath());
-                    return;// possible only package-info.java or module-info.java in the package, ignore them
+                    return; // 可能只有 package-info.java 或 module-info.java 在包中，忽略它们
                 }
+
+                // 查找本地类名
                 final Set<String> localClassNames = CommonUtils.findClassNameDefineIn(psiClasses, virtualFile);
                 ProjectFileIndex projectFileIndex = ProjectRootManager.getInstance(project).getFileIndex();
                 final Module module = projectFileIndex.getModuleForFile(virtualFile);
                 if (module == null) {
                     throw new RuntimeException("not found module info of file " + virtualFile.getName());
                 }
+
+                // 获取输出路径
                 String outPutPath;
                 if (inTestSourceContent) {
                     outPutPath = CompilerPaths.getModuleOutputPath(module, true);
-                } else {
+                }
+                else {
                     outPutPath = CompilerPaths.getModuleOutputPath(module, false);
                 }
                 if (outPutPath == null) {
                     throw new RuntimeException("not found module " + module.getName() + " output path");
                 }
-                //find inner class
+
+                // 查找内部类
                 final Path classFileBasePath = Paths.get(outPutPath).resolve(packagePath);
                 Set<String> offspringClassNames = new HashSet<>();
                 for (String localClassName : localClassNames) {
-                    CommonUtils.findOffspringClassName(offspringClassNames,
-                            classFileBasePath.resolve(localClassName + ".class"));
+                    CommonUtils.findOffspringClassName(offspringClassNames, classFileBasePath.resolve(localClassName + ".class"));
                 }
                 try {
                     Files.walk(classFileBasePath, 1).forEach(p -> {
@@ -143,15 +213,19 @@ public class ExportPacker implements CompileStatusNotification {
                         String className = classFileName.substring(0, classFileName.length() - ".class".length());
                         if (localClassNames.contains(className)) {
                             collectExportFile(filePaths, jarEntryNames, packagePath, p);
-                        } else if (offspringClassNames.contains(className)) {
+                        }
+                        else if (offspringClassNames.contains(className)) {
                             collectExportFile(filePaths, jarEntryNames, packagePath, p);
                         }
                     });
-                } catch (IOException e) {
+                }
+                catch (IOException e) {
                     throw new RuntimeException(e);
                 }
             }
-        } else {
+        }
+        else {
+            // 处理资源文件
             collectExportFile(filePaths, jarEntryNames, packagePath, Paths.get(virtualFile.getPath()));
         }
     }
@@ -160,19 +234,27 @@ public class ExportPacker implements CompileStatusNotification {
         return fileName.endsWith(".java") || fileName.endsWith(".kt");
     }
 
-    private void collectExportFile(List<Path> filePaths, List<String> jarEntryNames, String packagePath,
-                                   Path filePath) {
+    private void collectExportFile(List<Path> filePaths, List<String> jarEntryNames, String packagePath, Path filePath, String entryName) {
         filePaths.add(filePath);
-        String normalPackagePath = "".equals(packagePath) ? "" : packagePath.endsWith("/") ? packagePath :
-                packagePath + "/";
-        jarEntryNames.add(normalPackagePath + filePath.getFileName());
+        String normalEntryName = entryName == null ? "" : entryName;
+        if (entryName == null) {
+            String normalPackagePath = "".equals(packagePath) ? "" : packagePath.endsWith("/") ? packagePath : packagePath + "/";
+            normalEntryName = normalPackagePath + filePath.getFileName();
+        }
+        jarEntryNames.add(normalEntryName);
+    }
+
+    private void collectExportFile(List<Path> filePaths, List<String> jarEntryNames, String packagePath, Path filePath) {
+        collectExportFile(filePaths, jarEntryNames, packagePath, filePath, null);
     }
 
     @Override
-    public void finished(boolean b, int error, int i1, @NotNull CompileContext compileContext) {
+    public void finished(boolean b, int error, int i1, @NotNull
+    CompileContext compileContext) {
         if (error == 0) {
             ApplicationManager.getApplication().runWriteAction(this::whenFinishSuccess);
-        } else {
+        }
+        else {
             error(project, "compile error");
             infoNotify(Constants.actionName + " status", "compile error, detail in the messages tab");
         }
@@ -181,14 +263,14 @@ public class ExportPacker implements CompileStatusNotification {
     private void whenFinishSuccess() {
         try {
             this.pack();
-        } catch (Exception e) {
+        }
+        catch (Exception e) {
             error(project, stackInfo(e));
             errorNotify(Constants.actionName + " status", "export jar error, detail in the messages tab");
             return;
         }
         info(project, exportJarFullPath + " complete export successfully");
-        infoNotify(Constants.actionName + " status", exportJarFullPath + "<br> complete export successfully",
-                List.of(new CopyTextToClipboardAction(exportJarFullPath.toString()), new ShowInExplorerAction(exportJarFullPath)));
+        infoNotify(Constants.actionName + " status", exportJarFullPath + "<br> complete export successfully", List.of(new CopyTextToClipboardAction(exportJarFullPath.toString()), new ShowInExplorerAction(exportJarFullPath)));
 
     }
 

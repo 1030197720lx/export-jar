@@ -187,10 +187,25 @@ public class CommonUtils {
                 return compilerManager.isCompilableFileType(virtualFile.getFileType()) ||
                         compilerConfiguration.isCompilableResourceFile(project, virtualFile);
             }
+        }// 添加对web资源的检查
+        else if (virtualFile.isInLocalFileSystem()) {
+            // 检查是否在webapp目录下
+            return isInWebAppDirectory(virtualFile);
         }
         return false;
     }
 
+    // 添加新的辅助方法
+    private static boolean isInWebAppDirectory(VirtualFile virtualFile) {
+        VirtualFile current = virtualFile;
+        while (current != null) {
+            if ("webapp".equals(current.getName())) {
+                return true;
+            }
+            current = current.getParent();
+        }
+        return false;
+    }
     /**
      * lookup modules from data context
      *
