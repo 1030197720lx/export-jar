@@ -188,9 +188,22 @@ public class CommonUtils {
                         compilerConfiguration.isCompilableResourceFile(project, virtualFile);
             }
         }
+        else if (virtualFile.isInLocalFileSystem()) {
+            return isInWebAppDirectory(virtualFile);
+        }
         return false;
     }
 
+    private static boolean isInWebAppDirectory(VirtualFile virtualFile) {
+        VirtualFile current = virtualFile;
+        while (current != null) {
+            if ("webapp".equals(current.getName())) {
+                return true;
+            }
+            current = current.getParent();
+        }
+        return false;
+    }
     /**
      * lookup modules from data context
      *
